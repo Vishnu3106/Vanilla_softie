@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -102,20 +102,24 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
-def _iter_zip_images(zip_path: str, prefix: str):
+def _iter_zip_images(zip_path: str, prefix: str, drone_id: str = ""):
     """Yield decoded images from a zip archive in sorted order, looping."""
     with zipfile.ZipFile(zip_path, "r") as zf:
         imgs = sorted(f for f in zf.namelist() if f.startswith(prefix) and f.lower().endswith((".jpg", ".jpeg", ".png")))
+        if not imgs:
+            return
+        offset = hash(drone_id) % len(imgs) if drone_id else 0
         while True:
-            for img_path in imgs:
-                with zf.open(img_path) as f:
+            for i in range(offset, len(imgs)):
+                with zf.open(imgs[i]) as f:
                     buf = np.asarray(bytearray(f.read()), dtype=np.uint8)
                     frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
                     if frame is not None:
                         yield frame
+            offset = 0
 
 
-def _synthetic_frames():
+def _synthetic_frames(drone_id: str = ""):
     """Fallback: generate synthetic tactical frames when no dataset is present."""
     frame_idx = 0
     while True:
@@ -128,7 +132,7 @@ def _synthetic_frames():
             cv2.line(frame, (x, 0), (x, 480), (0, 40, 40), 1)
         for y in range(0, 480, 60):
             cv2.line(frame, (0, y), (640, y), (0, 40, 40), 1)
-        cv2.putText(frame, "NO SENSOR FEED — SYNTHETIC MODE", (60, 240),
+        cv2.putText(frame, f"NO SENSOR FEED — {drone_id} SYNTHETIC MODE", (60, 240),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 200), 2)
         cv2.putText(frame, f"FRAME {frame_idx:06d}", (230, 270),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
@@ -136,17 +140,17 @@ def _synthetic_frames():
         yield frame
 
 
-def _get_frame_source():
+def _get_frame_source(drone_id: str = ""):
     if os.path.exists(AUAIR_ZIP):
-        return _iter_zip_images(AUAIR_ZIP, "04_AUAIR_multimodal_uav/images/")
+        return _iter_zip_images(AUAIR_ZIP, "04_AUAIR_multimodal_uav/images/", drone_id)
     if os.path.exists(VISDRONE_ZIP):
-        return _iter_zip_images(VISDRONE_ZIP, "VisDrone2019-DET-train/images/")
-    return _synthetic_frames()
+        return _iter_zip_images(VISDRONE_ZIP, "VisDrone2019-DET-train/images/", drone_id)
+    return _synthetic_frames(drone_id)
 
 
 # ── MJPEG HTTP stream (legacy) ─────────────────────────────────────────────────
-def generate_video_frames():
-    for raw_frame in _get_frame_source():
+def generate_video_frames(drone_id: str = ""):
+    for raw_frame in _get_frame_source(drone_id):
         frame = annotate_frame(raw_frame)
         ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
         if ret:
@@ -155,17 +159,18 @@ def generate_video_frames():
 
 
 @app.get("/api/ai/vision")
-def vision_stream():
-    return StreamingResponse(generate_video_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+def vision_stream(droneId: str = ""):
+    return StreamingResponse(generate_video_frames(droneId), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 # ── WebSocket binary vision stream ────────────────────────────────────────────
 @app.websocket("/ws/vision")
 async def websocket_vision(websocket: WebSocket):
     await websocket.accept()
+    drone_id = websocket.query_params.get("droneId", "")
     loop = asyncio.get_event_loop()
     try:
-        frame_gen = _get_frame_source()
+        frame_gen = _get_frame_source(drone_id)
         while True:
             raw_frame = await loop.run_in_executor(None, next, frame_gen)
             annotated  = await loop.run_in_executor(None, annotate_frame, raw_frame)

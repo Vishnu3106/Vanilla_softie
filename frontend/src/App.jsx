@@ -4,10 +4,10 @@ import L from "leaflet";
 import { Line } from "react-chartjs-2";
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
-  PointElement, LineElement, Filler, Tooltip, Legend
+  PointElement, LineElement, Filler, Tooltip as ChartTooltip, Legend
 } from "chart.js";
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, ChartTooltip, Legend);
 
 // Fix default Leaflet marker icons
 delete L.Icon.Default.prototype._getIconUrl;
@@ -138,6 +138,12 @@ export default function App() {
   const [visionStatus, setVisionStatus] = useState("CONNECTING");
   const visionRef = useRef(null);
 
+  // ── Derived data ────────────────────────────────────────────────────────────
+  const droneList    = Object.values(drones);
+  const activeDrones = droneList.filter(d => d.status === "ACTIVE").length;
+  const criticalDrones = droneList.filter(d => (d.healthScore ?? 100) < 30).length;
+  const sel          = selectedDrone ? drones[selectedDrone] : droneList[0];
+
   // ── Telemetry WebSocket ─────────────────────────────────────────────────────
   useEffect(() => {
     let socket, retry;
@@ -176,7 +182,8 @@ export default function App() {
   useEffect(() => {
     let ws, retry;
     const connect = () => {
-      ws = new WebSocket(ML_WS);
+      const droneParam = sel?.droneId ? `?droneId=${sel.droneId}` : "";
+      ws = new WebSocket(`${ML_WS}${droneParam}`);
       ws.binaryType = "arraybuffer";
       setVisionStatus("CONNECTING");
       ws.onopen  = () => setVisionStatus("LIVE");
@@ -194,7 +201,7 @@ export default function App() {
     };
     connect();
     return () => { clearTimeout(retry); ws?.close(); };
-  }, []);
+  }, [sel?.droneId]);
 
   // ── API calls ───────────────────────────────────────────────────────────────
   const deployDrone = async (callsign) => {
@@ -243,11 +250,7 @@ export default function App() {
 
   const requestOverride = (droneId, command) => setPending({ droneId, command });
 
-  // ── Derived data ────────────────────────────────────────────────────────────
-  const droneList    = Object.values(drones);
-  const activeDrones = droneList.filter(d => d.status === "ACTIVE").length;
-  const criticalDrones = droneList.filter(d => (d.healthScore ?? 100) < 30).length;
-  const sel          = selectedDrone ? drones[selectedDrone] : droneList[0];
+
 
   // Chart data for selected drone
   const chartData = sel && batteryHistory[sel.droneId] ? {
@@ -437,7 +440,7 @@ export default function App() {
                 <img src={visionFrame} className="observer-img" alt="YOLOv8 annotated feed" />
               ) : (
                 <img
-                  src="http://127.0.0.1:8000/api/ai/vision"
+                  src={`http://127.0.0.1:8000/api/ai/vision${sel?.droneId ? `?droneId=${sel.droneId}` : ""}`}
                   className="observer-img"
                   alt="MJPEG fallback feed"
                   onError={(e) => { e.target.style.display = "none"; }}
