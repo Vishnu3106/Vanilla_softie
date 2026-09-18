@@ -1,5 +1,5 @@
-﻿import React, { useState, useEffect, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline, Tooltip } from "react-leaflet";
 import L from "leaflet";
 import { Line } from "react-chartjs-2";
 import {
@@ -93,8 +93,11 @@ const DeployModal = ({ onClose, onDeploy }) => {
 // ── Override Confirmation ──────────────────────────────────────────────────────
 const OverrideConfirm = ({ droneId, command, onConfirm, onCancel }) => {
   const [count, setCount] = useState(3);
+  // Use ref to avoid stale closure in the countdown effect
+  const confirmRef = useRef(onConfirm);
+  useEffect(() => { confirmRef.current = onConfirm; }, [onConfirm]);
   useEffect(() => {
-    if (count <= 0) { onConfirm(); return; }
+    if (count <= 0) { confirmRef.current(); return; }
     const t = setTimeout(() => setCount(c => c - 1), 1000);
     return () => clearTimeout(t);
   }, [count]);
@@ -127,6 +130,7 @@ export default function App() {
   const [showDeploy, setShowDeploy]  = useState(false);
   const [pendingOverride, setPending] = useState(null);
   const [batteryHistory, setBattery]  = useState({});
+  const [dronePaths, setDronePaths]   = useState({});
   const [wsStatus, setWsStatus]       = useState("CONNECTING");
 
   // Vision WebSocket
@@ -150,6 +154,14 @@ export default function App() {
           setBattery(prev => {
             const hist = prev[d.droneId] || [];
             return { ...prev, [d.droneId]: [...hist, d.batteryTemp].slice(-MAX_HISTORY) };
+          });
+          setDronePaths(prev => {
+            const path = prev[d.droneId] || [];
+            // Only add point if we have valid coordinates
+            if (d.latitude && d.longitude) {
+              return { ...prev, [d.droneId]: [...path, [d.latitude, d.longitude]].slice(-100) };
+            }
+            return prev;
           });
         } else if (payload.type === "ALERT") {
           setAlerts(prev => [payload.data, ...prev].slice(0, 20));
@@ -197,13 +209,36 @@ export default function App() {
   };
 
   const executeOverride = async (droneId, command) => {
+    // Optimistic update — disable buttons immediately before WS echo
+    setDrones(prev => ({
+      ...prev,
+      [droneId]: { ...prev[droneId], status: command }
+    }));
+    setPending(null);
     try {
       await fetch(`${BACKEND_URL}/api/fleet/${droneId}/override`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command })
       });
-      setPending(null);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error("Override failed:", e);
+      // Revert optimistic update on error
+      setDrones(prev => ({
+        ...prev,
+        [droneId]: { ...prev[droneId], status: "ACTIVE" }
+      }));
+    }
+  };
+
+  const executeTakeoff = async (droneId) => {
+    // Optimistic update
+    setDrones(prev => ({ ...prev, [droneId]: { ...prev[droneId], status: "ACTIVE" } }));
+    try {
+      await fetch(`${BACKEND_URL}/api/fleet/${droneId}/takeoff`, { method: "POST" });
+    } catch (e) {
+      console.error("Takeoff failed:", e);
+    }
   };
 
   const requestOverride = (droneId, command) => setPending({ droneId, command });
@@ -266,12 +301,29 @@ export default function App() {
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             />
             {droneList.map(d => (
-              <Marker
-                key={d.droneId}
-                position={[d.latitude ?? DUBAI[0], d.longitude ?? DUBAI[1]]}
-                icon={makeDroneIcon(d.status)}
-              >
-                <Popup className="cop-popup">
+              <React.Fragment key={d.droneId}>
+                {dronePaths[d.droneId] && (
+                  <Polyline 
+                    positions={dronePaths[d.droneId]} 
+                    color={d.status === "ACTIVE" ? "#00f0ff" : "#ff003c"} 
+                    weight={2} 
+                    opacity={0.6} 
+                    dashArray="4 4" 
+                  />
+                )}
+                <Marker
+                  position={[d.latitude ?? DUBAI[0], d.longitude ?? DUBAI[1]]}
+                  icon={makeDroneIcon(d.status)}
+                >
+                  <Tooltip direction="top" offset={[0, -20]} opacity={1} className="halo-tooltip">
+                    <div className="tooltip-content">
+                      <div className="tt-title">{d.droneId}</div>
+                      <div className="tt-row"><span>STATUS:</span><span style={{color: d.status === "ACTIVE" ? "#00f0ff" : "#ff003c"}}>{d.status}</span></div>
+                      <div className="tt-row"><span>LAT:</span><span>{d.latitude?.toFixed(5)}</span></div>
+                      <div className="tt-row"><span>LON:</span><span>{d.longitude?.toFixed(5)}</span></div>
+                    </div>
+                  </Tooltip>
+                  <Popup className="cop-popup">
                   <div className="popup-inner">
                     <div className="popup-title">{d.droneId}</div>
                     <div className="popup-row"><span>STATUS</span><span style={{ color: d.status === "ACTIVE" ? "#00f0ff" : "#ff003c" }}>{d.status}</span></div>
@@ -283,6 +335,7 @@ export default function App() {
                   </div>
                 </Popup>
               </Marker>
+              </React.Fragment>
             ))}
           </MapContainer>
           <div className="map-overlay-badge">LIVE TRACKING</div>
@@ -348,6 +401,12 @@ export default function App() {
                   <div className="cmd-callsign">{d.droneId}</div>
                   <div className={`status-pill ${d.status === "ACTIVE" ? "pill-active" : "pill-override"}`}>{d.status}</div>
                   <div className="cmd-btns">
+                    <button
+                      className="btn btn-deploy"
+                      onClick={() => executeTakeoff(d.droneId)}
+                      disabled={d.status === "ACTIVE"}
+                      style={{ padding: "4px 8px", fontSize: "0.75rem", marginRight: "6px" }}
+                    >TAKEOFF</button>
                     <button
                       className="btn btn-override-sm"
                       onClick={() => requestOverride(d.droneId, "EMERGENCY_LAND")}

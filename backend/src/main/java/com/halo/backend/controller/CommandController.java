@@ -45,6 +45,16 @@ public class CommandController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/{droneId}/takeoff")
+    public ResponseEntity<Map<String, Object>> takeoffDrone(@PathVariable String droneId) {
+        DroneState updated = fleetManager.takeoffDrone(droneId);
+        Map<String, Object> response = new HashMap<>();
+        response.put("droneId", droneId);
+        response.put("command", "TAKEOFF");
+        response.put("status", updated != null ? updated.getStatus() : "NOT_FOUND");
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getFleetStatus() {
         Map<String, Object> response = new HashMap<>();
