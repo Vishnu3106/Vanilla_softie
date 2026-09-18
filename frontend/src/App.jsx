@@ -471,21 +471,29 @@ export default function App() {
               <span className={`ws-pill sm ${visionStatus === "LIVE" ? "live" : "dead"}`}>{visionStatus}</span>
             </div>
             <div className="observer-feed">
-              <img 
-                ref={imgRef}
-                src={`http://127.0.0.1:8000/api/ai/vision${sel?.droneId ? `?droneId=${sel.droneId}` : ""}`} 
-                className="observer-img" 
-                alt="YOLOv8 annotated feed" 
-                onError={(e) => { e.target.style.display = "none"; }}
-              />
-              <div className="observer-hud">
-                <div className="observer-corner tl" />
-                <div className="observer-corner tr" />
-                <div className="observer-corner bl" />
-                <div className="observer-corner br" />
-                <div className="observer-scan" />
-              </div>
-              <div className="observer-label">LIVE: AI TARGET ACQUISITION</div>
+              {sel ? (
+                <>
+                  <img 
+                    ref={imgRef}
+                    src={`http://127.0.0.1:8000/api/ai/vision?droneId=${sel.droneId}`} 
+                    className="observer-img" 
+                    alt="YOLOv8 annotated feed" 
+                    onError={(e) => { e.target.style.display = "none"; }}
+                  />
+                  <div className="observer-hud">
+                    <div className="observer-corner tl" />
+                    <div className="observer-corner tr" />
+                    <div className="observer-corner bl" />
+                    <div className="observer-corner br" />
+                    <div className="observer-scan" />
+                  </div>
+                  <div className="observer-label">LIVE: AI TARGET ACQUISITION</div>
+                </>
+              ) : (
+                <div className="no-signal-container">
+                  <div className="no-signal-text">NO SIGNAL</div>
+                </div>
+              )}
             </div>
           </section>
 
