@@ -1,168 +1,430 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import L from 'leaflet';
+﻿import React, { useState, useEffect, useRef, useCallback } from "react";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
+import { Line } from "react-chartjs-2";
+import {
+  Chart as ChartJS, CategoryScale, LinearScale,
+  PointElement, LineElement, Filler, Tooltip, Legend
+} from "chart.js";
 
-// Fix Leaflet marker icons
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+
+// Fix default Leaflet marker icons
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  iconUrl:       "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-function App() {
-  const [drones, setDrones] = useState({});
-  const [alerts, setAlerts] = useState([]);
-  const [ws, setWs] = useState(null);
+// ── Custom SVG drone icon factory ─────────────────────────────────────────────
+const makeDroneIcon = (status) => {
+  const color = status === "ACTIVE" ? "#00f0ff"
+              : status === "EMERGENCY_LAND"  ? "#ff003c"
+              : status === "RETURN_TO_BASE"  ? "#ffaa00"
+              : "#888";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+    <circle cx="18" cy="18" r="16" fill="#000" fill-opacity="0.7" stroke="${color}" stroke-width="2"/>
+    <circle cx="18" cy="18" r="5" fill="${color}"/>
+    <line x1="4"  y1="4"  x2="12" y2="12" stroke="${color}" stroke-width="1.5"/>
+    <line x1="32" y1="4"  x2="24" y2="12" stroke="${color}" stroke-width="1.5"/>
+    <line x1="4"  y1="32" x2="12" y2="24" stroke="${color}" stroke-width="1.5"/>
+    <line x1="32" y1="32" x2="24" y2="24" stroke="${color}" stroke-width="1.5"/>
+    <circle cx="5"  cy="5"  r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+    <circle cx="31" cy="5"  r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+    <circle cx="5"  cy="31" r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+    <circle cx="31" cy="31" r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: "",
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+    popupAnchor: [0, -20],
+  });
+};
 
-  useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8081/ws/telemetry');
-    setWs(socket);
-
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === 'TELEMETRY') {
-        setDrones(prev => ({
-          ...prev,
-          [payload.data.droneId]: payload.data
-        }));
-      } else if (payload.type === 'ALERT') {
-        setAlerts(prev => [payload.data, ...prev].slice(0, 10));
-      }
-    };
-
-    return () => socket.close();
-  }, []);
-
-  const deployDrone = async () => {
-    try {
-      const res = await fetch('http://localhost:8081/api/fleet/deploy', { method: 'POST' });
-      const data = await res.json();
-      console.log('Deployed:', data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const overrideDrone = async (droneId) => {
-    try {
-      await fetch(`http://localhost:8081/api/fleet/${droneId}/override`, { method: 'POST' });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // Center on Dubai for static map
-  const position = [25.2048, 55.2708]; 
-
+// ── RUL Gauge Component ────────────────────────────────────────────────────────
+const RulGauge = ({ value = 0, label = "" }) => {
+  const pct = Math.min(100, Math.max(0, value));
+  const color = pct > 70 ? "#00ff66" : pct > 30 ? "#ffaa00" : "#ff003c";
   return (
-    <div className="h-screen w-screen flex flex-col p-4 space-y-4">
-      <header className="flex justify-between items-center border-b border-[var(--cyan-accent)] pb-4">
-        <div>
-          <h1 className="text-3xl font-bold text-[var(--cyan-accent)] tracking-widest">H.A.L.O.</h1>
-          <p className="text-sm text-gray-400">Health & Aerial Logistics Observer</p>
-        </div>
-        <button 
-          onClick={deployDrone}
-          className="bg-[var(--surface)] border border-[var(--cyan-accent)] px-6 py-2 text-[var(--cyan-accent)] hover:bg-[var(--cyan-accent)] hover:text-black transition-colors"
-        >
-          DEPLOY DRONE
-        </button>
-      </header>
+    <div className="rul-gauge">
+      <div className="rul-label">{label}</div>
+      <div className="rul-bar-bg">
+        <div className="rul-bar-fill" style={{ width: `${pct}%`, background: color, boxShadow: `0 0 8px ${color}` }} />
+      </div>
+      <div className="rul-value" style={{ color }}>{pct.toFixed(1)}%</div>
+    </div>
+  );
+};
 
-      <div className="flex-1 grid grid-cols-3 gap-4 min-h-0">
-        {/* Left Column: Map & Vitals */}
-        <div className="col-span-2 flex flex-col space-y-4">
-          <div className="flex-1 bg-[var(--surface)] border border-[var(--grid-cyan)] relative overflow-hidden p-1">
-            <MapContainer center={position} zoom={13} style={{ height: '100%', width: '100%' }}>
-              <TileLayer
-                attribution='&copy; <a href="https://carto.com/">CartoDB</a>'
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-              />
-              {Object.values(drones).map(d => (
-                <Marker key={d.droneId} position={[position[0] + (d.altitude - 100)*0.0001, position[1] + d.vibrationScore*0.0001]}>
-                  <Popup>
-                    <div className="text-black">
-                      <b>{d.droneId}</b><br/>
-                      Alt: {d.altitude.toFixed(1)}m<br/>
-                      RUL: {d.healthScore ? d.healthScore.toFixed(2) : 'N/A'}
-                    </div>
-                  </Popup>
-                </Marker>
-              ))}
-            </MapContainer>
-            <div className="absolute top-2 left-2 z-[1000] bg-black/50 p-2 text-xs border border-[var(--cyan-accent)] text-[var(--cyan-accent)]">
-              TACTICAL OVERVIEW
-            </div>
-          </div>
-          
-          <div className="h-48 bg-[var(--surface)] border border-[var(--grid-cyan)] p-4 overflow-y-auto">
-            <h2 className="text-lg text-[var(--cyan-accent)] mb-2 font-mono">TELEMETRY MATRIX</h2>
-            <table className="w-full text-sm text-left font-mono">
-              <thead>
-                <tr className="border-b border-gray-700 text-gray-400">
-                  <th className="py-1">CALLSIGN</th>
-                  <th>TEMP (C)</th>
-                  <th>RPM</th>
-                  <th>RUL (SCORE)</th>
-                  <th>ACTION</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.values(drones).map(d => (
-                  <tr key={d.droneId} className="border-b border-gray-800">
-                    <td className="py-2 text-[var(--cyan-accent)]">{d.droneId}</td>
-                    <td className={d.batteryTemp > 75 ? 'text-[var(--crimson-alert)] font-bold' : ''}>{d.batteryTemp.toFixed(1)}</td>
-                    <td className={d.motorRpm < 2000 ? 'text-[var(--amber-alert)] font-bold' : ''}>{d.motorRpm.toFixed(0)}</td>
-                    <td>{d.healthScore ? d.healthScore.toFixed(1) : '...'}</td>
-                    <td>
-                      <button onClick={() => overrideDrone(d.droneId)} className="text-xs border border-[var(--crimson-alert)] text-[var(--crimson-alert)] px-2 py-1 hover:bg-[var(--crimson-alert)] hover:text-white">
-                        OVERRIDE
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+// ── Deploy Drone Modal ─────────────────────────────────────────────────────────
+const DeployModal = ({ onClose, onDeploy }) => {
+  const [callsign, setCallsign] = useState("");
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onDeploy(callsign.trim().toUpperCase() || undefined);
+    onClose();
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">▶ DEPLOY NEW UNIT</span>
+          <button className="modal-close" onClick={onClose}>✕</button>
         </div>
+        <form onSubmit={handleSubmit}>
+          <label className="modal-label">CALLSIGN (optional)</label>
+          <input
+            className="modal-input"
+            placeholder="e.g. GHOST-07"
+            value={callsign}
+            onChange={(e) => setCallsign(e.target.value)}
+            maxLength={12}
+          />
+          <button type="submit" className="btn btn-deploy">LAUNCH UNIT</button>
+        </form>
+      </div>
+    </div>
+  );
+};
 
-        {/* Right Column: Video Feed & Alerts */}
-        <div className="col-span-1 flex flex-col space-y-4">
-          <div className="h-64 bg-black border border-[var(--cyan-accent)] relative flex items-center justify-center">
-            <img 
-              src="http://127.0.0.1:8000/api/ai/vision" 
-              alt="YOLOv8 Observer Feed"
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                e.target.style.display = 'none';
-                e.target.nextSibling.style.display = 'block';
-              }}
-            />
-            <div className="hidden text-[var(--amber-alert)] font-mono animate-pulse">
-              [NO SIGNAL DETECTED]
-            </div>
-            <div className="absolute top-2 right-2 text-xs text-[var(--cyan-accent)] font-mono bg-black/80 px-2 py-1">
-              OBSERVER FEED [LIVE]
-            </div>
-          </div>
-          
-          <div className="flex-1 bg-[var(--surface)] border border-[var(--crimson-alert)] p-4 flex flex-col">
-            <h2 className="text-lg text-[var(--crimson-alert)] mb-2 font-mono border-b border-[var(--crimson-alert)] pb-1">CRITICAL ALERTS</h2>
-            <div className="flex-1 overflow-y-auto space-y-2 font-mono text-sm">
-              {alerts.length === 0 && <p className="text-gray-500 italic">No active alerts.</p>}
-              {alerts.map((a, i) => (
-                <div key={i} className="bg-black/40 border-l-2 border-[var(--crimson-alert)] p-2">
-                  <div className="text-[var(--crimson-alert)] font-bold">{a.droneId} - {a.severity}</div>
-                  <div className="text-gray-300 text-xs">{a.message}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+// ── Override Confirmation ──────────────────────────────────────────────────────
+const OverrideConfirm = ({ droneId, command, onConfirm, onCancel }) => {
+  const [count, setCount] = useState(3);
+  useEffect(() => {
+    if (count <= 0) { onConfirm(); return; }
+    const t = setTimeout(() => setCount(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [count]);
+  return (
+    <div className="modal-overlay">
+      <div className="modal-box override-confirm">
+        <div className="override-warn">⚠ COMMAND AUTHORITY REQUIRED</div>
+        <div className="override-detail">{droneId} → {command}</div>
+        <div className="override-countdown">Auto-executing in {count}s</div>
+        <div className="override-actions">
+          <button className="btn btn-danger" onClick={onConfirm}>EXECUTE NOW</button>
+          <button className="btn btn-cancel" onClick={onCancel}>ABORT</button>
         </div>
       </div>
     </div>
   );
-}
+};
 
-export default App;
+// ── Main App ───────────────────────────────────────────────────────────────────
+const DUBAI = [25.2048, 55.2708];
+const BACKEND_WS  = "ws://localhost:8081/ws/telemetry";
+const ML_WS       = "ws://localhost:8000/ws/vision";
+const BACKEND_URL = "http://localhost:8081";
+const MAX_HISTORY = 30;
+
+export default function App() {
+  const [drones, setDrones]         = useState({});
+  const [alerts, setAlerts]         = useState([]);
+  const [selectedDrone, setSelected] = useState(null);
+  const [showDeploy, setShowDeploy]  = useState(false);
+  const [pendingOverride, setPending] = useState(null);
+  const [batteryHistory, setBattery]  = useState({});
+  const [wsStatus, setWsStatus]       = useState("CONNECTING");
+
+  // Vision WebSocket
+  const [visionFrame, setVisionFrame] = useState(null);
+  const [visionStatus, setVisionStatus] = useState("CONNECTING");
+  const visionRef = useRef(null);
+
+  // ── Telemetry WebSocket ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let socket, retry;
+    const connect = () => {
+      socket = new WebSocket(BACKEND_WS);
+      setWsStatus("CONNECTING");
+      socket.onopen  = () => setWsStatus("LIVE");
+      socket.onclose = () => { setWsStatus("RECONNECTING"); retry = setTimeout(connect, 2000); };
+      socket.onmessage = (ev) => {
+        const payload = JSON.parse(ev.data);
+        if (payload.type === "TELEMETRY") {
+          const d = payload.data;
+          setDrones(prev => ({ ...prev, [d.droneId]: d }));
+          setBattery(prev => {
+            const hist = prev[d.droneId] || [];
+            return { ...prev, [d.droneId]: [...hist, d.batteryTemp].slice(-MAX_HISTORY) };
+          });
+        } else if (payload.type === "ALERT") {
+          setAlerts(prev => [payload.data, ...prev].slice(0, 20));
+        }
+      };
+    };
+    connect();
+    return () => { clearTimeout(retry); socket?.close(); };
+  }, []);
+
+  // ── Vision WebSocket ────────────────────────────────────────────────────────
+  useEffect(() => {
+    let ws, retry;
+    const connect = () => {
+      ws = new WebSocket(ML_WS);
+      ws.binaryType = "arraybuffer";
+      setVisionStatus("CONNECTING");
+      ws.onopen  = () => setVisionStatus("LIVE");
+      ws.onclose = () => {
+        setVisionStatus("RECONNECTING");
+        // Fallback to MJPEG after first disconnect
+        retry = setTimeout(connect, 3000);
+      };
+      ws.onmessage = (ev) => {
+        const blob = new Blob([ev.data], { type: "image/jpeg" });
+        const url  = URL.createObjectURL(blob);
+        setVisionFrame(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
+      };
+      visionRef.current = ws;
+    };
+    connect();
+    return () => { clearTimeout(retry); ws?.close(); };
+  }, []);
+
+  // ── API calls ───────────────────────────────────────────────────────────────
+  const deployDrone = async (callsign) => {
+    try {
+      const body = callsign ? JSON.stringify({ callsign }) : "{}";
+      const res  = await fetch(`${BACKEND_URL}/api/fleet/deploy`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body
+      });
+      const data = await res.json();
+      console.log("Deployed:", data);
+    } catch (e) { console.error(e); }
+  };
+
+  const executeOverride = async (droneId, command) => {
+    try {
+      await fetch(`${BACKEND_URL}/api/fleet/${droneId}/override`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command })
+      });
+      setPending(null);
+    } catch (e) { console.error(e); }
+  };
+
+  const requestOverride = (droneId, command) => setPending({ droneId, command });
+
+  // ── Derived data ────────────────────────────────────────────────────────────
+  const droneList    = Object.values(drones);
+  const activeDrones = droneList.filter(d => d.status === "ACTIVE").length;
+  const criticalDrones = droneList.filter(d => (d.healthScore ?? 100) < 30).length;
+  const sel          = selectedDrone ? drones[selectedDrone] : droneList[0];
+
+  // Chart data for selected drone
+  const chartData = sel && batteryHistory[sel.droneId] ? {
+    labels: batteryHistory[sel.droneId].map((_, i) => i),
+    datasets: [{
+      label: "Battery Temp (°C)",
+      data: batteryHistory[sel.droneId],
+      borderColor: "#00f0ff",
+      backgroundColor: "rgba(0,240,255,0.08)",
+      fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2,
+    }]
+  } : null;
+
+  const chartOptions = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: "rgba(255,255,255,0.05)" }, ticks: { color: "#888", font: { size: 10 } } }
+    }
+  };
+
+  return (
+    <div className="halo-root">
+      {/* ── HEADER ──────────────────────────────────────────────────────────── */}
+      <header className="halo-header-bar">
+        <div className="header-brand">
+          <span className="brand-title">H.A.L.O.</span>
+          <span className="brand-sub">HEALTH & AERIAL LOGISTICS OBSERVER // C4ISR v2.0</span>
+        </div>
+        <div className="header-stats">
+          <div className="hstat"><span className="hstat-val">{droneList.length}</span><span className="hstat-lbl">UNITS</span></div>
+          <div className="hstat active"><span className="hstat-val">{activeDrones}</span><span className="hstat-lbl">ACTIVE</span></div>
+          <div className={`hstat ${criticalDrones > 0 ? "critical blink" : ""}`}>
+            <span className="hstat-val">{criticalDrones}</span><span className="hstat-lbl">CRITICAL</span>
+          </div>
+          <div className={`ws-pill ${wsStatus === "LIVE" ? "live" : "dead"}`}>{wsStatus}</div>
+        </div>
+        <button className="btn btn-deploy hdr-deploy" onClick={() => setShowDeploy(true)}>⊕ DEPLOY</button>
+      </header>
+
+      {/* ── MAIN GRID ───────────────────────────────────────────────────────── */}
+      <div className="halo-grid">
+
+        {/* COL 1: COP MAP */}
+        <section className="panel map-panel">
+          <div className="panel-title">◈ COMMON OPERATING PICTURE</div>
+          <MapContainer center={DUBAI} zoom={13} className="leaflet-fill" zoomControl={false}>
+            <TileLayer
+              attribution='&copy; <a href="https://carto.com/">CartoDB</a>'
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            />
+            {droneList.map(d => (
+              <Marker
+                key={d.droneId}
+                position={[d.latitude ?? DUBAI[0], d.longitude ?? DUBAI[1]]}
+                icon={makeDroneIcon(d.status)}
+              >
+                <Popup className="cop-popup">
+                  <div className="popup-inner">
+                    <div className="popup-title">{d.droneId}</div>
+                    <div className="popup-row"><span>STATUS</span><span style={{ color: d.status === "ACTIVE" ? "#00f0ff" : "#ff003c" }}>{d.status}</span></div>
+                    <div className="popup-row"><span>ALT</span><span>{d.altitude?.toFixed(1)} m</span></div>
+                    <div className="popup-row"><span>TEMP</span><span className={d.batteryTemp > 75 ? "txt-red" : ""}>{d.batteryTemp?.toFixed(1)}°C</span></div>
+                    <div className="popup-row"><span>RPM</span><span className={d.motorRpm < 2000 ? "txt-amber" : ""}>{d.motorRpm?.toFixed(0)}</span></div>
+                    <div className="popup-row"><span>RUL</span><span>{d.rul?.toFixed(1) ?? "—"}</span></div>
+                    <RulGauge value={d.healthScore ?? 0} label="HEALTH" />
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
+          </MapContainer>
+          <div className="map-overlay-badge">LIVE TRACKING</div>
+        </section>
+
+        {/* COL 2: VITALS + COMMAND */}
+        <div className="col2">
+          {/* FLEET VITALS */}
+          <section className="panel vitals-panel">
+            <div className="panel-title">◈ FLEET VITALS</div>
+            <div className="drone-tabs">
+              {droneList.map(d => (
+                <button
+                  key={d.droneId}
+                  className={`drone-tab ${sel?.droneId === d.droneId ? "active" : ""}`}
+                  onClick={() => setSelected(d.droneId)}
+                  style={{ borderColor: d.status !== "ACTIVE" ? "#ff003c" : undefined }}
+                >
+                  {d.droneId.length > 10 ? d.droneId.slice(0, 10) : d.droneId}
+                </button>
+              ))}
+            </div>
+            {sel ? (
+              <div className="vitals-body">
+                <RulGauge value={sel.healthScore ?? 0} label={`${sel.droneId} — HEALTH SCORE`} />
+                <div className="vitals-row">
+                  <div className="vstat">
+                    <div className="vstat-label">BATTERY TEMP</div>
+                    <div className={`vstat-value ${sel.batteryTemp > 75 ? "txt-red" : ""}`}>{sel.batteryTemp?.toFixed(1)}°C</div>
+                  </div>
+                  <div className="vstat">
+                    <div className="vstat-label">MOTOR RPM</div>
+                    <div className={`vstat-value ${sel.motorRpm < 2000 ? "txt-amber" : ""}`}>{sel.motorRpm?.toFixed(0)}</div>
+                  </div>
+                  <div className="vstat">
+                    <div className="vstat-label">ALTITUDE</div>
+                    <div className="vstat-value">{sel.altitude?.toFixed(0)} m</div>
+                  </div>
+                  <div className="vstat">
+                    <div className="vstat-label">RUL CYCLES</div>
+                    <div className="vstat-value">{sel.rul?.toFixed(1) ?? "—"}</div>
+                  </div>
+                </div>
+                {chartData && (
+                  <div className="chart-container">
+                    <div className="chart-title">BATTERY DEGRADATION TREND</div>
+                    <div className="chart-wrap">
+                      <Line data={chartData} options={chartOptions} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : <div className="no-data">NO UNITS ONLINE</div>}
+          </section>
+
+          {/* COMMAND CONSOLE */}
+          <section className="panel cmd-panel">
+            <div className="panel-title">◈ COMMAND CONSOLE</div>
+            <div className="cmd-list">
+              {droneList.length === 0 && <div className="no-data">Deploy units to enable C2</div>}
+              {droneList.map(d => (
+                <div key={d.droneId} className="cmd-row">
+                  <div className="cmd-callsign">{d.droneId}</div>
+                  <div className={`status-pill ${d.status === "ACTIVE" ? "pill-active" : "pill-override"}`}>{d.status}</div>
+                  <div className="cmd-btns">
+                    <button
+                      className="btn btn-override-sm"
+                      onClick={() => requestOverride(d.droneId, "EMERGENCY_LAND")}
+                      disabled={d.status !== "ACTIVE"}
+                    >LAND</button>
+                    <button
+                      className="btn btn-rtb-sm"
+                      onClick={() => requestOverride(d.droneId, "RETURN_TO_BASE")}
+                      disabled={d.status !== "ACTIVE"}
+                    >RTB</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        {/* COL 3: OBSERVER + ALERTS */}
+        <div className="col3">
+          {/* OBSERVER MATRIX */}
+          <section className="panel observer-panel">
+            <div className="panel-title">
+              ◈ OBSERVER MATRIX
+              <span className={`ws-pill sm ${visionStatus === "LIVE" ? "live" : "dead"}`}>{visionStatus}</span>
+            </div>
+            <div className="observer-feed">
+              {visionFrame ? (
+                <img src={visionFrame} className="observer-img" alt="YOLOv8 annotated feed" />
+              ) : (
+                <img
+                  src="http://127.0.0.1:8000/api/ai/vision"
+                  className="observer-img"
+                  alt="MJPEG fallback feed"
+                  onError={(e) => { e.target.style.display = "none"; }}
+                />
+              )}
+              <div className="observer-hud">
+                <div className="observer-corner tl" />
+                <div className="observer-corner tr" />
+                <div className="observer-corner bl" />
+                <div className="observer-corner br" />
+                <div className="observer-scan" />
+              </div>
+              <div className="observer-label">LIVE: AI TARGET ACQUISITION</div>
+            </div>
+          </section>
+
+          {/* ALERT FEED */}
+          <section className="panel alert-panel">
+            <div className="panel-title txt-red">⚠ CRITICAL ALERTS</div>
+            <div className="alert-scroll">
+              {alerts.length === 0 && <div className="no-data">No active alerts</div>}
+              {alerts.map((a, i) => (
+                <div key={i} className={`alert-row ${a.severity === "CRITICAL" ? "alert-critical" : "alert-medium"}`}>
+                  <div className="alert-head">
+                    <span className="alert-drone">{a.droneId}</span>
+                    <span className={`sev-badge sev-${a.severity?.toLowerCase()}`}>{a.severity}</span>
+                  </div>
+                  <div className="alert-msg">{a.message}</div>
+                  <div className="alert-ts">{a.timestamp?.split("T")[1]?.split(".")[0]}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      {/* ── MODALS ──────────────────────────────────────────────────────────── */}
+      {showDeploy && <DeployModal onClose={() => setShowDeploy(false)} onDeploy={deployDrone} />}
+      {pendingOverride && (
+        <OverrideConfirm
+          droneId={pendingOverride.droneId}
+          command={pendingOverride.command}
+          onConfirm={() => executeOverride(pendingOverride.droneId, pendingOverride.command)}
+          onCancel={() => setPending(null)}
+        />
+      )}
+    </div>
+  );
+}

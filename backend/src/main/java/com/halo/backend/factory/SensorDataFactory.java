@@ -16,18 +16,15 @@ public class SensorDataFactory {
                 .motorRpm(parseDouble(rawData.get("motorRpm")))
                 .altitude(parseDouble(rawData.get("altitude")))
                 .vibrationScore(parseDouble(rawData.get("vibrationScore")))
+                .latitude(parseDouble(rawData.get("latitude")))
+                .longitude(parseDouble(rawData.get("longitude")))
+                .status(rawData.containsKey("status") ? (String) rawData.get("status") : "ACTIVE")
                 .build();
     }
-    
+
     private double parseDouble(Object val) {
         if (val == null) return 0.0;
-        if (val instanceof Number) {
-            return ((Number) val).doubleValue();
-        }
-        try {
-            return Double.parseDouble(val.toString());
-        } catch (NumberFormatException e) {
-            return 0.0;
-        }
+        if (val instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(val.toString()); } catch (NumberFormatException e) { return 0.0; }
     }
 }

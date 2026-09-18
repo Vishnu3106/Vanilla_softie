@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+﻿from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pickle
 import pandas as pd
@@ -8,6 +9,7 @@ import zipfile
 import cv2
 import numpy as np
 import time
+import asyncio
 
 try:
     from ultralytics import YOLO
@@ -16,108 +18,171 @@ except ImportError:
 
 app = FastAPI(title="H.A.L.O. AI Operations Center")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── RUL Model ──────────────────────────────────────────────────────────────────
 MODEL_PATH = "rul_xgboost.pkl"
 rul_model = None
 if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, 'rb') as f:
+    with open(MODEL_PATH, "rb") as f:
         rul_model = pickle.load(f)
 
-# Load YOLOv8n (will download automatically on first run if missing)
-yolo_model = YOLO('yolov8n.pt') if YOLO else None
+# ── YOLOv8 ────────────────────────────────────────────────────────────────────
+yolo_model = YOLO("yolov8n.pt") if YOLO else None
 
+# ── Data paths ────────────────────────────────────────────────────────────────
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+AUAIR_ZIP   = os.path.join(DATA_DIR, "04_AUAIR_multimodal_uav.zip")
+VISDRONE_ZIP = os.path.join(DATA_DIR, "05_VisDrone_detection_tracking.zip")
+
+
+# ── Pydantic schema ───────────────────────────────────────────────────────────
 class TelemetryData(BaseModel):
     droneId: str
-    timestamp: str
+    timestamp: str = ""
     batteryTemp: float
     motorRpm: float
     altitude: float
     vibrationScore: float
+    latitude: float = 0.0
+    longitude: float = 0.0
+    status: str = "ACTIVE"
 
+
+# ── RUL Prediction ────────────────────────────────────────────────────────────
 @app.post("/api/ai/rul")
 def predict_rul(data: TelemetryData):
     if rul_model is None:
         raise HTTPException(status_code=503, detail="RUL Model not loaded.")
-
     df = pd.DataFrame([{
-        'sensor_2': data.batteryTemp,
-        'sensor_11': data.motorRpm,
-        'sensor_14': data.altitude,
-        'sensor_15': data.vibrationScore
+        "sensor_2":  data.batteryTemp,
+        "sensor_11": data.motorRpm,
+        "sensor_14": data.altitude,
+        "sensor_15": data.vibrationScore,
     }])
-    
     rul_pred = float(rul_model.predict(df)[0])
-    
-    # Calculate HealthScore 0-100 (assuming 130 is nominal max RUL for CMAPSS)
     health_score = max(0.0, min(100.0, (rul_pred / 130.0) * 100.0))
-    
-    return {
-        "droneId": data.droneId, 
-        "rul": rul_pred,
-        "healthScore": health_score
-    }
+    return {"droneId": data.droneId, "rul": rul_pred, "healthScore": health_score}
 
-# Keeping /predict for backward compatibility until Phase 2 is finished
+
 @app.post("/predict")
 def predict_health_legacy(data: TelemetryData):
     result = predict_rul(data)
     return {"droneId": data.droneId, "healthScore": result["healthScore"]}
 
-def generate_video_frames():
-    zip_path = '../data/04_AUAIR_multimodal_uav.zip'
-    if not os.path.exists(zip_path) or yolo_model is None:
-        while True:
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "Waiting for YOLO/Data...", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            ret, buffer = cv2.imencode('.jpg', frame)
-            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(1)
 
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        # Get all image paths inside zip
-        image_files = [f for f in zf.namelist() if f.startswith('04_AUAIR_multimodal_uav/images/') and f.endswith('.jpg')]
-        image_files.sort()
-        
+# ── Frame annotation helper ───────────────────────────────────────────────────
+def annotate_frame(frame: np.ndarray) -> np.ndarray:
+    frame = cv2.resize(frame, (640, 480))
+    if yolo_model is not None:
+        results = yolo_model(frame, verbose=False)
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+                cls_id = int(box.cls[0])
+                conf   = float(box.conf[0])
+                label  = yolo_model.names[cls_id]
+                color  = (0, 0, 255) if label in ["person", "car", "truck", "bus"] else (0, 255, 0)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{label} {conf:.2f}", (x1, max(y1 - 8, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
+    # HUD overlay
+    cv2.putText(frame, "HALO // LIVE AERIAL DETECTION", (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    ts = time.strftime("%H:%M:%S UTC")
+    cv2.putText(frame, ts, (480, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    # Corner crosshair marks
+    for (cx, cy) in [(16, 40), (624, 40), (16, 460), (624, 460)]:
+        cv2.drawMarker(frame, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 12, 1)
+    return frame
+
+
+def _iter_zip_images(zip_path: str, prefix: str):
+    """Yield decoded images from a zip archive in sorted order, looping."""
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        imgs = sorted(f for f in zf.namelist() if f.startswith(prefix) and f.lower().endswith((".jpg", ".jpeg", ".png")))
         while True:
-            for img_file in image_files:
-                with zf.open(img_file) as f:
-                    file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                    frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                    
+            for img_path in imgs:
+                with zf.open(img_path) as f:
+                    buf = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
                     if frame is not None:
-                        # Resize for performance and UI consistency
-                        frame = cv2.resize(frame, (640, 480))
-                        
-                        # Run YOLO inference
-                        results = yolo_model(frame, verbose=False)
-                        
-                        # Draw bounding boxes
-                        for r in results:
-                            boxes = r.boxes
-                            for box in boxes:
-                                x1, y1, x2, y2 = box.xyxy[0].int().tolist()
-                                cls_id = int(box.cls[0])
-                                class_name = yolo_model.names[cls_id]
-                                
-                                color = (0, 255, 0) # Green for friendlies
-                                if class_name in ['person', 'car', 'truck']:
-                                    color = (0, 0, 255) # Red for potential threats
-                                    
-                                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                                cv2.putText(frame, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                        
-                        # Add HUD overlays
-                        cv2.putText(frame, "LIVE: AERIAL DETECTION", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        
-                        ret, buffer = cv2.imencode('.jpg', frame)
-                        frame_bytes = buffer.tobytes()
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                time.sleep(0.1) # Simulate 10 FPS for performance
+                        yield frame
+
+
+def _synthetic_frames():
+    """Fallback: generate synthetic tactical frames when no dataset is present."""
+    frame_idx = 0
+    while True:
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Animated scan bar
+        bar_y = int((time.time() * 60) % 480)
+        cv2.line(frame, (0, bar_y), (640, bar_y), (0, 255, 255), 1)
+        # Grid
+        for x in range(0, 640, 80):
+            cv2.line(frame, (x, 0), (x, 480), (0, 40, 40), 1)
+        for y in range(0, 480, 60):
+            cv2.line(frame, (0, y), (640, y), (0, 40, 40), 1)
+        cv2.putText(frame, "NO SENSOR FEED — SYNTHETIC MODE", (60, 240),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 200), 2)
+        cv2.putText(frame, f"FRAME {frame_idx:06d}", (230, 270),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
+        frame_idx += 1
+        yield frame
+
+
+def _get_frame_source():
+    if os.path.exists(AUAIR_ZIP):
+        return _iter_zip_images(AUAIR_ZIP, "04_AUAIR_multimodal_uav/images/")
+    if os.path.exists(VISDRONE_ZIP):
+        return _iter_zip_images(VISDRONE_ZIP, "VisDrone2019-DET-train/images/")
+    return _synthetic_frames()
+
+
+# ── MJPEG HTTP stream (legacy) ─────────────────────────────────────────────────
+def generate_video_frames():
+    for raw_frame in _get_frame_source():
+        frame = annotate_frame(raw_frame)
+        ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ret:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+        time.sleep(0.12)  # ~8 FPS
+
 
 @app.get("/api/ai/vision")
 def vision_stream():
     return StreamingResponse(generate_video_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+
+# ── WebSocket binary vision stream ────────────────────────────────────────────
+@app.websocket("/ws/vision")
+async def websocket_vision(websocket: WebSocket):
+    await websocket.accept()
+    loop = asyncio.get_event_loop()
+    try:
+        frame_gen = _get_frame_source()
+        while True:
+            raw_frame = await loop.run_in_executor(None, next, frame_gen)
+            annotated  = await loop.run_in_executor(None, annotate_frame, raw_frame)
+            ret, buf   = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 72])
+            if ret:
+                await websocket.send_bytes(buf.tobytes())
+            await asyncio.sleep(0.12)  # ~8 FPS
+    except (WebSocketDisconnect, Exception):
+        pass
+
+
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "rul_model_loaded": rul_model is not None, "yolo_model_loaded": yolo_model is not None}
+    return {
+        "status": "ok",
+        "rul_model_loaded": rul_model is not None,
+        "yolo_model_loaded": yolo_model is not None,
+        "auair_dataset": os.path.exists(AUAIR_ZIP),
+        "visdrone_dataset": os.path.exists(VISDRONE_ZIP),
+    }

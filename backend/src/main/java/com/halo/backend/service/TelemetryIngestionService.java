@@ -53,39 +53,32 @@ public class TelemetryIngestionService {
     }
 
     private void processTelemetry(TelemetryData data) {
-        // Constraint A: batteryTemperature > 75.0C
-        // Constraint B: motorRpm < 2000.0
-        
         boolean hasAnomaly = Stream.of(
             checkAnomaly(data.getBatteryTemp() > 75.0, data, "CRITICAL", "Battery temperature exceeded 75.0C limit"),
             checkAnomaly(data.getMotorRpm() < 2000.0, data, "CRITICAL", "Motor RPM dropped below 2000.0 safe limit")
-        ).anyMatch(anomaly -> anomaly);
+        ).anyMatch(a -> a);
 
-        // Fetch ML Health Score asynchronously
-        webClient.post()
-            .uri("/api/ai/rul")
-            .bodyValue(data)
-            .retrieve()
-            .bodyToMono(Map.class)
+        webClient.post().uri("/api/ai/rul").bodyValue(data).retrieve().bodyToMono(Map.class)
             .subscribe(
                 response -> {
-                    Double score = (Double) response.get("healthScore");
-                    latestHealthScores.put(data.getDroneId(), score);
-                    
-                    // Emit to reactive stream
-                    healthScoreSinks.computeIfAbsent(data.getDroneId(), k -> reactor.core.publisher.Sinks.many().replay().latest())
-                            .tryEmitNext(score);
-                            
+                    Object scoreObj = response.get("healthScore");
+                    Object rulObj   = response.get("rul");
+                    Double score = scoreObj instanceof Number ? ((Number) scoreObj).doubleValue() : null;
+                    Double rul   = rulObj   instanceof Number ? ((Number) rulObj).doubleValue()   : null;
+                    latestHealthScores.put(data.getDroneId(), score != null ? score : 100.0);
+                    healthScoreSinks.computeIfAbsent(data.getDroneId(),
+                            k -> reactor.core.publisher.Sinks.many().replay().latest())
+                            .tryEmitNext(score != null ? score : 100.0);
                     data.setHealthScore(score);
+                    data.setRul(rul);
                     webSocketHandler.broadcastTelemetry(data);
-                    
                     if (score != null && score < 50.0 && !hasAnomaly) {
-                         triggerAlert(data, "MEDIUM", "ML Health Score dropped below 50");
+                        triggerAlert(data, "MEDIUM", "ML Health Score dropped below 50");
                     }
                 },
                 error -> {
-                    log.error("Failed to fetch ML score for drone {}: {}", data.getDroneId(), error.getMessage());
-                    webSocketHandler.broadcastTelemetry(data); // Broadcast anyway even if ML fails
+                    log.error("ML score error for drone {}: {}", data.getDroneId(), error.getMessage());
+                    webSocketHandler.broadcastTelemetry(data);
                 }
             );
     }

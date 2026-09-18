@@ -15,6 +15,7 @@ dependencies = [
     "scikit-learn>=1.9.1",
     "ultralytics>=8.4.155",
     "uvicorn>=0.53.0",
+    "websockets>=17.1",
     "xgboost>=3.2.0",
 ]
 
