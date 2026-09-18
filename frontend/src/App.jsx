@@ -134,9 +134,9 @@ export default function App() {
   const [wsStatus, setWsStatus]       = useState("CONNECTING");
 
   // Vision WebSocket
-  const [visionFrame, setVisionFrame] = useState(null);
   const [visionStatus, setVisionStatus] = useState("CONNECTING");
   const visionRef = useRef(null);
+  const imgRef = useRef(null);
 
   // ── Derived data ────────────────────────────────────────────────────────────
   const droneList    = Object.values(drones);
@@ -181,6 +181,7 @@ export default function App() {
   // ── Vision WebSocket ────────────────────────────────────────────────────────
   useEffect(() => {
     let ws, retry;
+    let lastUrl = null;
     const connect = () => {
       const droneParam = sel?.droneId ? `?droneId=${sel.droneId}` : "";
       ws = new WebSocket(`${ML_WS}${droneParam}`);
@@ -195,12 +196,26 @@ export default function App() {
       ws.onmessage = (ev) => {
         const blob = new Blob([ev.data], { type: "image/jpeg" });
         const url  = URL.createObjectURL(blob);
-        setVisionFrame(prev => { if (prev) URL.revokeObjectURL(prev); return url; });
+        const tempImg = new Image();
+        tempImg.onload = () => {
+          if (imgRef.current) {
+            imgRef.current.src = url;
+            if (lastUrl) URL.revokeObjectURL(lastUrl);
+            lastUrl = url;
+          } else {
+            URL.revokeObjectURL(url);
+          }
+        };
+        tempImg.src = url;
       };
       visionRef.current = ws;
     };
     connect();
-    return () => { clearTimeout(retry); ws?.close(); };
+    return () => { 
+      clearTimeout(retry); 
+      ws?.close(); 
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+    };
   }, [sel?.droneId]);
 
   // ── API calls ───────────────────────────────────────────────────────────────
@@ -436,16 +451,13 @@ export default function App() {
               <span className={`ws-pill sm ${visionStatus === "LIVE" ? "live" : "dead"}`}>{visionStatus}</span>
             </div>
             <div className="observer-feed">
-              {visionFrame ? (
-                <img src={visionFrame} className="observer-img" alt="YOLOv8 annotated feed" />
-              ) : (
-                <img
-                  src={`http://127.0.0.1:8000/api/ai/vision${sel?.droneId ? `?droneId=${sel.droneId}` : ""}`}
-                  className="observer-img"
-                  alt="MJPEG fallback feed"
-                  onError={(e) => { e.target.style.display = "none"; }}
-                />
-              )}
+              <img 
+                ref={imgRef}
+                src={`http://127.0.0.1:8000/api/ai/vision${sel?.droneId ? `?droneId=${sel.droneId}` : ""}`} 
+                className="observer-img" 
+                alt="YOLOv8 annotated feed" 
+                onError={(e) => { e.target.style.display = "none"; }}
+              />
               <div className="observer-hud">
                 <div className="observer-corner tl" />
                 <div className="observer-corner tr" />

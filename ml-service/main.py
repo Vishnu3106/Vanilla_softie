@@ -102,13 +102,12 @@ def annotate_frame(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
-def _iter_zip_images(zip_path: str, prefix: str, drone_id: str = ""):
+def _iter_zip_images(zip_path: str, prefix: str, offset: int = 0):
     """Yield decoded images from a zip archive in sorted order, looping."""
     with zipfile.ZipFile(zip_path, "r") as zf:
         imgs = sorted(f for f in zf.namelist() if f.startswith(prefix) and f.lower().endswith((".jpg", ".jpeg", ".png")))
         if not imgs:
             return
-        offset = hash(drone_id) % len(imgs) if drone_id else 0
         while True:
             for i in range(offset, len(imgs)):
                 with zf.open(imgs[i]) as f:
@@ -141,10 +140,26 @@ def _synthetic_frames(drone_id: str = ""):
 
 
 def _get_frame_source(drone_id: str = ""):
+    # Use deterministic hash to assign a consistent footage sequence to a drone
+    import hashlib
+    h = int(hashlib.sha256(drone_id.encode()).hexdigest(), 16) if drone_id else 0
+    
     if os.path.exists(AUAIR_ZIP):
-        return _iter_zip_images(AUAIR_ZIP, "04_AUAIR_multimodal_uav/images/", drone_id)
+        # AUAIR has multiple distinct video sequences
+        prefixes = [
+            '04_AUAIR_multimodal_uav/images/frame_20190829091111', 
+            '04_AUAIR_multimodal_uav/images/frame_20190906150731', 
+            '04_AUAIR_multimodal_uav/images/frame_20190905091750', 
+            '04_AUAIR_multimodal_uav/images/frame_20190905103112', 
+            '04_AUAIR_multimodal_uav/images/frame_20190829091316', 
+            '04_AUAIR_multimodal_uav/images/frame_20190905112522'
+        ]
+        prefix = prefixes[h % len(prefixes)]
+        return _iter_zip_images(AUAIR_ZIP, prefix, 0)
+        
     if os.path.exists(VISDRONE_ZIP):
-        return _iter_zip_images(VISDRONE_ZIP, "VisDrone2019-DET-train/images/", drone_id)
+        return _iter_zip_images(VISDRONE_ZIP, "VisDrone2019-DET-train/images/", h % 500)
+        
     return _synthetic_frames(drone_id)
 
 
