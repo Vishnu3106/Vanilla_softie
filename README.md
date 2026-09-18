@@ -67,28 +67,31 @@ graph TD
         YOLO -->|Annotated Bounding Box Stream| ObsMatrix
         Console -->|POST Commands| C2API
     end
+```
 
-🚀 Key Modules & Capabilities
-1. ⚙️ Tactical Ingestion Engine (backend/)
-High-Volume Telemetry Parsing: Utilizes Java functional streams to parse concurrent, simulated flight trajectories (ADS-B data) from the OpenSky dataset with ultra-low latency.
+---
 
-Observer Pattern Alerts: Continuously monitors metrics like motor RPM and battery temperature. Instantly dispatches CRITICAL warnings via WebSockets when physical thresholds are breached.
+## 🚀 Key Modules & Capabilities
 
-Command & Control (C2) APIs: Exposes REST endpoints (/api/fleet/deploy, /api/fleet/override) allowing operators to spawn new drones or force emergency landings.
+### 1. ⚙️ Tactical Ingestion Engine (`backend/`)
+* **High-Volume Telemetry Parsing:** Utilizes Java functional streams to parse concurrent, simulated flight trajectories (ADS-B data) from the **OpenSky** dataset with ultra-low latency.
+* **Observer Pattern Alerts:** Continuously monitors metrics like motor RPM and battery temperature. Instantly dispatches `CRITICAL` warnings via WebSockets when physical thresholds are breached.
+* **Command & Control (C2) APIs:** Exposes REST endpoints (`/api/fleet/deploy`, `/api/fleet/override`) allowing operators to spawn new drones or force emergency landings.
 
-2. 🧠 AI Operations Center (ml-service/)
-Predictive Maintenance (RUL): An XGBoost model trained on the NASA CMAPSS dataset calculates the Remaining Useful Life (RUL) of drone rotors. It shifts the system from reactive to predictive by forecasting mechanical failures before they occur.
+### 2. 🧠 AI Operations Center (`ml-service/`)
+* **Predictive Maintenance (RUL):** An XGBoost model trained on the **NASA CMAPSS** dataset calculates the Remaining Useful Life (RUL) of drone rotors. It shifts the system from reactive to predictive by forecasting mechanical failures before they occur.
+* **Multimodal Target Acquisition:** A YOLOv8 computer vision pipeline processes synchronized visual/sensor feeds from the **VisDrone** and **AUAIR** datasets, drawing high-contrast bounding boxes around ground vehicles and personnel.
 
-Multimodal Target Acquisition: A YOLOv8 computer vision pipeline processes synchronized visual/sensor feeds from the VisDrone and AUAIR datasets, drawing high-contrast bounding boxes around ground vehicles and personnel.
+### 3. 💻 C4ISR Tactical HUD (`frontend/`)
+* **Common Operating Picture (COP):** A dark-mode, React-based interactive map using Leaflet.js to plot the live coordinates of the drone swarm.
+* **Observer Matrix:** A dedicated UI panel that streams the live, annotated video feed from the YOLOv8 pipeline for active threat verification.
+* **Vitals Dashboard:** Real-time Chart.js graphs displaying fleet-wide health scores and battery degradation trends.
 
-3. 💻 C4ISR Tactical HUD (frontend/)
-Common Operating Picture (COP): A dark-mode, React-based interactive map using Leaflet.js to plot the live coordinates of the drone swarm.
+---
 
-Observer Matrix: A dedicated UI panel that streams the live, annotated video feed from the YOLOv8 pipeline for active threat verification.
+## 📂 Repository Layout
 
-Vitals Dashboard: Real-time Chart.js graphs displaying fleet-wide health scores and battery degradation trends.
-
-📂 Repository Layout
+```text
 halo-c4isr/
 ├── .github/
 │   └── workflows/
@@ -116,3 +119,55 @@ halo-c4isr/
 │   ├── tailwind.config.js         # Tactical UI color palette
 │   └── package.json               # Node dependencies
 └── README.md                      # Project documentation
+```
+
+---
+
+## ⚡ Quickstart Guide
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/your-org/halo-c4isr.git
+cd halo-c4isr
+```
+
+### 2. Launch AI Operations Center (Python)
+```bash
+cd ml-service
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn api:app --reload --port 8000
+```
+
+### 3. Launch Tactical Ingestion Engine (Java)
+Open a new terminal window:
+```bash
+cd backend
+mvn clean install
+mvn spring-boot:run
+```
+*The Spring Boot server will initialize on `http://localhost:8080`.*
+
+### 4. Launch C4ISR HUD (React)
+Open a third terminal window:
+```bash
+cd frontend
+npm install
+npm start
+```
+*Access the tactical dashboard at `http://localhost:3000`.*
+
+---
+
+## 👥 Hackathon Team
+* **Vishnu H** – Front-End Architecture & C4ISR HUD
+* **Madhan D** – Backend Data Pipelines & Java Ingestion Engine
+* **Kavinesh D** – Predictive ML Engineering (RUL Forecasting)
+* **Chandru M** – Computer Vision & Multimodal Target Acquisition
+
+## ⚖️ Simulated Operational Disclaimers
+This prototype is built for hackathon demonstration purposes. The datasets utilized (OpenSky, NASA CMAPSS, VisDrone) contain historical or simulated data. Flight override commands and telemetry generation do not interact with live airspace or active UAV hardware. 
+
+## 📄 License
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
