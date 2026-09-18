@@ -263,6 +263,20 @@ export default function App() {
     }
   };
 
+  const executeTurnOff = async (droneId) => {
+    try {
+      await fetch(`${BACKEND_URL}/api/fleet/${droneId}/turnoff`, { method: "POST" });
+      setDrones(prev => {
+        const next = { ...prev };
+        delete next[droneId];
+        return next;
+      });
+      if (selectedDrone === droneId) setSelected(null);
+    } catch (e) {
+      console.error("Turn off failed:", e);
+    }
+  };
+
   const requestOverride = (droneId, command) => setPending({ droneId, command });
 
 
@@ -435,6 +449,12 @@ export default function App() {
                       onClick={() => requestOverride(d.droneId, "RETURN_TO_BASE")}
                       disabled={d.status !== "ACTIVE"}
                     >RTB</button>
+                    <button
+                      className="btn btn-danger"
+                      onClick={() => executeTurnOff(d.droneId)}
+                      disabled={d.status !== "EMERGENCY_LAND" && d.status !== "RETURN_TO_BASE"}
+                      style={{ padding: "4px 8px", fontSize: "0.75rem", marginLeft: "6px" }}
+                    >TURN OFF</button>
                   </div>
                 </div>
               ))}

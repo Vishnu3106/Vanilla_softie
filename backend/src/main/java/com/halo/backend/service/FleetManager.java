@@ -76,6 +76,15 @@ public class FleetManager {
         return state;
     }
 
+    public boolean turnOffDrone(String callsign) {
+        if (fleetRegistry.containsKey(callsign)) {
+            fleetRegistry.remove(callsign);
+            trajectoryDelta.remove(callsign);
+            return true;
+        }
+        return false;
+    }
+
     public Map<String, DroneState> getFleetRegistry() {
         return Collections.unmodifiableMap(fleetRegistry);
     }

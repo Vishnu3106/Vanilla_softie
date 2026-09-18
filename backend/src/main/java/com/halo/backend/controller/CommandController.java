@@ -55,6 +55,16 @@ public class CommandController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/{droneId}/turnoff")
+    public ResponseEntity<Map<String, Object>> turnOffDrone(@PathVariable String droneId) {
+        boolean removed = fleetManager.turnOffDrone(droneId);
+        Map<String, Object> response = new HashMap<>();
+        response.put("droneId", droneId);
+        response.put("command", "TURN_OFF");
+        response.put("status", removed ? "OFF" : "NOT_FOUND");
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getFleetStatus() {
         Map<String, Object> response = new HashMap<>();
